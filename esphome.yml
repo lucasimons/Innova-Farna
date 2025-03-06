@@ -1,0 +1,572 @@
+
+uart:
+  tx_pin: D2
+  rx_pin: D3
+  baud_rate: 9600
+  stop_bits: 1
+modbus:
+
+modbus_controller:
+  - id: airleaf
+    address: 0x1
+
+climate:
+  - platform: thermostat
+    name: "Farna Termostato"
+    id: airleaf_climate
+    sensor: air_temperature
+    set_point_minimum_differential: 2
+    visual:
+      temperature_step: 0.5
+
+    cool_action:
+      - logger.log: "Cooling activated"
+    min_cooling_off_time: 1s
+    min_cooling_run_time: 1s
+
+    heat_action:
+      - logger.log: "Heating activated"
+    min_heating_off_time: 1s
+    min_heating_run_time: 1s
+
+    idle_action:
+      - logger.log: "Idle activated"
+    min_idle_time: 1s
+
+    # auto_mode:
+    #   - select.set:
+    #       id: season
+    #       option: "Auto"
+
+    off_mode:
+      - if:
+          condition:
+            lambda: 'return id(fan_mode).state != "Standby";'
+          then:
+            - select.set:
+                id: fan_mode
+                option: "Standby"
+    heat_mode:
+      - if:
+          condition:
+            lambda: 'return id(season).state != "Winter";'
+          then:
+            - select.set:
+                id: season
+                option: "Winter"
+    cool_mode:
+      - if:
+          condition:
+            lambda: 'return id(season).state != "Summer";'
+          then:
+            - select.set:
+                id: season
+                option: "Summer"
+
+    fan_mode_auto_action:
+      - if:
+          condition:
+            lambda: 'return id(fan_mode).state != "Auto";'
+          then:
+            - select.set:
+                id: fan_mode
+                option: "Auto"
+    fan_mode_quiet_action:
+      - if:
+          condition:
+            lambda: 'return id(fan_mode).state != "Night";'
+          then:
+            - select.set:
+                id: fan_mode
+                option: "Night"
+    fan_mode_low_action:
+      - if:
+          condition:
+            lambda: 'return id(fan_mode).state != "Low";'
+          then:
+            - select.set:
+                id: fan_mode
+                option: "Low"
+    fan_mode_high_action:
+      - if:
+          condition:
+            lambda: 'return id(fan_mode).state != "High";'
+          then:
+            - select.set:
+                id: fan_mode
+                option: "High"
+    min_fan_mode_switching_time: 1s
+
+    target_temperature_change_action:
+      # Sync temperature setpoint with changed thermostat dial
+      - if:
+          condition:
+            lambda: "return id(airleaf_climate).mode == CLIMATE_MODE_COOL && id(airleaf_climate).target_temperature_high != id(target_temperature).state;"
+          then:
+            - number.set:
+                id: target_temperature
+                value: !lambda "return id(airleaf_climate).target_temperature_high;"
+      - if:
+          condition:
+            lambda: "return id(airleaf_climate).mode == CLIMATE_MODE_HEAT && id(airleaf_climate).target_temperature_low != id(target_temperature).state;"
+          then:
+            - number.set:
+                id: target_temperature
+                value: !lambda "return id(airleaf_climate).target_temperature_low;"
+    default_preset: home
+    preset:
+      - name: home
+        fan_mode: auto
+        default_target_temperature_low: 20 °C
+        default_target_temperature_high: 25 °C
+      - name: eco
+        fan_mode: auto
+        default_target_temperature_low: 19 °C
+        default_target_temperature_high: 26 °C
+      - name: comfort
+        fan_mode: auto
+        default_target_temperature_low: 21 °C
+        default_target_temperature_high: 24 °C
+      - name: sleep
+        fan_mode: quiet
+        default_target_temperature_low: 20 °C
+        default_target_temperature_high: 25 °C
+      - name: boost
+        fan_mode: high
+        default_target_temperature_low: 21 °C
+        default_target_temperature_high: 24 °C
+
+sensor:
+  - platform: wifi_signal
+    name: rssi
+    update_interval: 60s
+
+  - platform: modbus_controller
+    name: Temperatura Aria Farna
+    id: air_temperature
+    register_type: read
+    address: 0
+    # Prevent reading register at address 1 at the same time
+    force_new_range: true
+    unit_of_measurement: "°C"
+    device_class: temperature
+    state_class: measurement
+    value_type: U_WORD
+    accuracy_decimals: 1
+    filters:
+      - multiply: 0.1
+
+  - platform: modbus_controller
+    name: Temperatura Acqua Farna
+    icon: "mdi:coolant-temperature"
+    register_type: read
+    address: 1
+    force_new_range: true
+    unit_of_measurement: "°C"
+    device_class: temperature
+    state_class: measurement
+    value_type: U_WORD
+    accuracy_decimals: 1
+    filters:
+      - multiply: 0.1
+
+  - platform: modbus_controller
+    name: Fan speed
+    icon: "mdi:speedometer"
+    register_type: read
+    address: 15
+    unit_of_measurement: "RPM"
+    device_class: frequency
+    state_class: measurement
+    value_type: U_WORD
+
+text_sensor:
+  - platform: modbus_controller
+    name: Status flags
+    icon: "mdi:flag"
+    entity_category: diagnostic
+    register_type: read
+    address: 104
+    force_new_range: true
+    raw_encode: HEXBYTES
+    filters:
+      - lambda: |-
+          uint16_t value = modbus_controller::word_from_hex_str(x, 0);
+          return to_string(value);
+      - map:
+          - 0 -> No flags
+          - 1 -> Cooling
+          - 2 -> Heating
+          - 16 -> Water T
+          - 64 -> Bad water
+          - 256 -> Away mode
+          - 512 -> Alarm
+          - 1024 -> Testing
+          - 2048 -> Standby
+          - 8192 -> H2 absent
+
+  - platform: modbus_controller
+    name: Alarm flags
+    icon: "mdi:alert-circle-outline"
+    entity_category: diagnostic
+    register_type: read
+    address: 105
+    raw_encode: HEXBYTES
+    filters:
+      - lambda: |-
+          uint16_t value = modbus_controller::word_from_hex_str(x, 0);
+          return to_string(value);
+      - map:
+          - 0 -> OK
+          - 1 -> Comm
+          - 2 -> Air probe
+          - 8 -> Bad water
+          - 16 -> Water probe
+          - 64 -> HiZ
+          - 128 -> Motor
+          - 256 -> Grid
+          - 512 -> Water T
+          - 1024 -> Filter
+
+  - platform: modbus_controller
+    name: Relay status
+    icon: "mdi:dip-switch"
+    entity_category: diagnostic
+    register_type: read
+    address: 9
+    raw_encode: HEXBYTES
+    filters:
+      - lambda: |-
+          uint16_t value = modbus_controller::word_from_hex_str(x, 0);
+          return to_string(value);
+      - map:
+          - 0 -> All off
+          - 1 -> EV1
+          - 2 -> EV2
+          - 3 -> EV1|EV2
+          - 4 -> Chiller
+          - 5 -> Chiller|EV1
+          - 7 -> Chiller|EV1|EV2
+          - 8 -> Heater
+          - 9 -> Heater|EV1
+          - 11 -> Heater|EV1|EV2
+
+number:
+  - platform: modbus_controller
+    id: target_temperature
+    name: Temperature Farna
+    mode: slider
+    icon: "mdi:thermometer"
+    entity_category: config
+    unit_of_measurement: "°C"
+    device_class: temperature
+    address: 231
+    value_type: U_WORD
+    min_value: 16.0
+    max_value: 25.0
+    step: 0.5
+    # Read old value from register
+    lambda: "return x * 0.1;"
+    # Write new value to register
+    write_lambda: "return x * 10;"
+    on_value:
+      # Sync thermostat dial with changed setpoint temperature
+      then:
+        - if:
+            condition:
+              lambda: "return id(airleaf_climate).mode == CLIMATE_MODE_COOL;"
+            then:
+              - climate.control:
+                  id: airleaf_climate
+                  target_temperature_high: !lambda "return x;"
+            else:
+              - climate.control:
+                  id: airleaf_climate
+                  target_temperature_low: !lambda "return x;"
+
+  - platform: modbus_controller
+    name: Device Address
+    mode: box
+    icon: "mdi:id-card"
+    entity_category: config
+    address: 200
+    force_new_range: true
+    value_type: U_WORD
+    min_value: 1
+    max_value: 255
+    step: 1
+    lambda: "return x;"
+    write_lambda: "return x;"
+
+  - platform: modbus_controller
+    name: Min heating water T
+    mode: box
+    icon: "mdi:thermometer-chevron-up"
+    entity_category: config
+    device_class: frequency
+    address: 218
+    force_new_range: true
+    value_type: U_WORD
+    min_value: 220
+    max_value: 350
+    step: 0.5
+
+
+  - platform: modbus_controller
+    name: Max cooling water T
+    mode: box
+    icon: "mdi:thermometer-chevron-down"
+    entity_category: config
+    device_class: frequency
+    address: 219
+    value_type: U_WORD
+    min_value: 15.0
+    max_value: 20.0
+    step: 0.5
+    lambda: "return x * 0.1;"
+    write_lambda: "return x * 10;"
+
+  # Minimum speed in MIN and Night mode (400)
+  - platform: modbus_controller
+    name: Min fan speed (Night)
+    mode: box
+    icon: "mdi:fan-speed-1"
+    entity_category: config
+    device_class: frequency
+    address: 210
+    force_new_range: true
+    value_type: U_WORD
+    min_value: 200
+    max_value: 680
+    step: 10
+    lambda: "return x;"
+    write_lambda: "return x;"
+
+  # Maximum speed in Night Mode and Minimum in AUTO (550)
+  - platform: modbus_controller
+    name: Min fan speed
+    mode: box
+    icon: "mdi:fan-auto"
+    entity_category: config
+    device_class: frequency
+    address: 211
+    force_new_range: true
+    value_type: U_WORD
+    min_value: 300
+    max_value: 1100
+    step: 10
+    lambda: "return x;"
+    write_lambda: "return x;"
+
+  # Maximum speed in MIN and Minimum in MAX (680)
+  - platform: modbus_controller
+    name: Min fan speed (MAX)
+    mode: box
+    icon: "mdi:fan-speed-3"
+    entity_category: config
+    device_class: frequency
+    address: 212
+    force_new_range: true
+    value_type: U_WORD
+    min_value: 400
+    max_value: 1100
+    step: 10
+    lambda: "return x;"
+    write_lambda: "return x;"
+
+  # Maximum speed in AUTO (1100)
+  - platform: modbus_controller
+    name: Max fan speed
+    mode: box
+    icon: "mdi:fan-auto"
+    entity_category: config
+    device_class: frequency
+    address: 213
+    force_new_range: true
+    value_type: U_WORD
+    min_value: 550
+    max_value: 1500
+    step: 10
+    lambda: "return x;"
+    write_lambda: "return x;"
+
+  # Maximum speed in MAX (1500)
+  - platform: modbus_controller
+    name: Max fan speed (MAX)
+    mode: box
+    icon: "mdi:fan-speed-3"
+    entity_category: config
+    device_class: frequency
+    address: 214
+    force_new_range: true
+    value_type: U_WORD
+    min_value: 550
+    max_value: 1500
+    step: 10
+    lambda: "return x;"
+    write_lambda: "return x;"
+
+  # Maximum speed in MAX with Performance enabled (1700)
+  - platform: modbus_controller
+    name: Max fan speed (MAX Perf)
+    mode: box
+    icon: "mdi:fan-chevron-up"
+    entity_category: config
+    device_class: frequency
+    address: 215
+    value_type: U_WORD
+    min_value: 550
+    max_value: 1700
+    step: 10
+    lambda: "return x;"
+    write_lambda: "return x;"
+
+  # Maximum speed in MIN and Minimum in MAX with Performance enabled (920)
+  - platform: modbus_controller
+    name: Max fan speed (MIN)
+    mode: box
+    icon: "mdi:fan-speed-1"
+    entity_category: config
+    device_class: frequency
+    address: 230
+    force_new_range: true
+    value_type: U_WORD
+    min_value: 550
+    max_value: 1500
+    step: 10
+    lambda: "return x;"
+    write_lambda: "return x;"
+
+  # Maximum speed in AUTO with Performance enabled (1220)
+  - platform: modbus_controller
+    name: Max fan speed (AUTO Perf)
+    mode: box
+    icon: "mdi:fan-chevron-up"
+    entity_category: config
+    device_class: frequency
+    address: 234
+    value_type: U_WORD
+    min_value: 550
+    max_value: 1500
+    step: 10
+    lambda: "return x;"
+    write_lambda: "return x;"
+
+  - platform: modbus_controller
+    name: Air probe offset
+    mode: box
+    icon: "mdi:compare-vertical"
+    entity_category: config
+    address: 242
+    force_new_range: true
+    value_type: S_WORD
+    min_value: -12
+    max_value: 12
+    step: 0.1
+    lambda: "return x * 0.1;"
+    write_lambda: "return x * 10;"
+
+select:
+  - platform: modbus_controller
+    name: Fan mode
+    id: fan_mode
+    icon: "mdi:fan"
+    entity_category: config
+    address: 201
+    force_new_range: true
+    value_type: U_WORD
+    optionsmap:
+      "Auto": 0
+      "Low": 1
+      "Night": 2
+      "High": 3
+      "Standby": 128
+    # Sync current option with register
+    #lambda: "return {};"
+    # Write (numeric) value to register
+    #write_lambda: "return value;"
+    # Sync climate component
+    on_value:
+      # Sync thermostat with changed fan mode
+      then:
+        - climate.control:
+            id: airleaf_climate
+            fan_mode: !lambda |-
+              static std::map<std::string, climate::ClimateFanMode> mode_map {
+                {"Auto", CLIMATE_FAN_AUTO},
+                {"Low", CLIMATE_FAN_LOW},
+                {"Night", CLIMATE_FAN_QUIET},
+                {"High", CLIMATE_FAN_HIGH},
+                {"Standby", CLIMATE_FAN_OFF}
+              };
+              return mode_map[x];
+
+  - platform: modbus_controller
+    name: Season
+    id: season
+    icon: "mdi:sun-snowflake"
+    entity_category: config
+    address: 233
+    force_new_range: true
+    value_type: U_WORD
+    optionsmap:
+      # "Auto": 0
+      "Winter": 3
+      "Summer": 5
+    #lambda: "return {};"
+    #write_lambda: "return value;"
+    on_value:
+      # Sync thermostat with changed season
+      then:
+        - climate.control:
+            id: airleaf_climate
+            mode: !lambda |-
+              static std::map<std::string, climate::ClimateMode> mode_map {
+                {"Winter", CLIMATE_MODE_HEAT},
+                {"Summer", CLIMATE_MODE_COOL}
+              };
+              return mode_map[x];
+
+switch:
+  - platform: template
+    name: Standby
+    id: standby_switch
+    icon: "mdi:power-standby"
+    entity_category: config
+    lambda: |-
+      auto val = id(fan_mode).state;
+      return val == "Standby";
+    turn_on_action:
+      - lambda: |-
+          id(fan_mode_state) = id(fan_mode).state;
+      - select.set:
+          id: fan_mode
+          option: "Standby"
+    turn_off_action:
+      - select.set:
+          id: fan_mode
+          option: !lambda |-
+            return id(fan_mode_state);
+
+  - platform: template
+    name: Night mode
+    icon: "mdi:weather-night"
+    lambda: |-
+      auto val = id(fan_mode).state;
+      return val == "Night";
+    turn_on_action:
+      - select.set:
+          id: fan_mode
+          option: "Night"
+    turn_off_action:
+      - select.set:
+          id: fan_mode
+          option: "Auto"
+
+  - platform: restart
+    name: Restart
+
+globals:
+  - id: fan_mode_state
+    type: std::string
+      
